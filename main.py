@@ -161,7 +161,7 @@ Instructions:
 3. Combine them to give actionable advice.
 4. If "Organic" methods are mentioned, prioritize them.
 
-Your Advice:
+Your Advice, respond in Englis:
 """
 
 prompt = PromptTemplate(
