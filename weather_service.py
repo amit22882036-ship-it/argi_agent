@@ -4,7 +4,7 @@ import os
 
 
 class WeatherService:
-    def __init__(self, data_dir="data"):
+    def __init__(self, data_dir="city_data"):
         self.data_dir = data_dir
         self.weather_cache = {}
         self.load_weather_data()
@@ -15,12 +15,11 @@ class WeatherService:
             print(f"WARNING: Directory {self.data_dir} not found.")
             return
 
-        # Load only .json files that are NOT source books
-        files = [f for f in os.listdir(self.data_dir) if f.endswith('.json') and not f.startswith("source_")]
+        files = [f for f in os.listdir(self.data_dir) if f.endswith('.json')]
 
         print(f"--- Loading Weather Files from {self.data_dir} ---")
         for f in files:
-            # Create a clean key (e.g., 'haifa_technion.json' -> 'haifa_technion')
+            # Clean key: 'haifa_technion.json' -> 'haifa_technion'
             city_key = f.replace(".json", "").lower()
 
             try:
@@ -29,49 +28,65 @@ class WeatherService:
                     data = json.load(file)
                     df = pd.DataFrame(data)
 
-                    # 1. Parse Dates Correctly (Handle Day/Month/Year formats)
+                    # Parse and Sort
                     df['date'] = pd.to_datetime(df['date'], dayfirst=True)
-
-                    # 2. Sort by Date (Oldest -> Newest)
                     df = df.sort_values(by='date')
 
                     self.weather_cache[city_key] = df
-                    latest_date = df.iloc[-1]['date']
-                    print(f"Loaded '{city_key}': {len(df)} records. Latest data point: {latest_date}")
             except Exception as e:
                 print(f"Error loading {f}: {e}")
 
     def get_current_weather(self, city: str):
         """
-        Finds the weather file for the city and returns the LATEST data point.
+        Finds the weather file for the city using smart matching.
         """
-        search_key = city.lower()
+        # 1. Normalize User Input (e.g., "Tel Aviv (TLV Beach)" -> "tel aviv (tlv beach)")
+        user_query = city.lower()
+
         df = None
+        matched_key = None
 
-        # 1. Try Exact Match
-        if search_key in self.weather_cache:
-            df = self.weather_cache[search_key]
+        # 2. Iterate through all loaded files to find the best match
+        for file_key in self.weather_cache:
+            # Normalize file key: "tlv_beach" -> "tlv beach"
+            clean_file_key = file_key.replace("_", " ")
 
-        # 2. Try Partial Match (e.g., User: "Haifa" -> File: "haifa_technion")
-        if df is None:
-            for key in self.weather_cache:
-                if search_key in key:
-                    df = self.weather_cache[key]
-                    break
+            # MATCHING LOGIC:
+            # A. Exact Match
+            if user_query == clean_file_key:
+                df = self.weather_cache[file_key]
+                matched_key = file_key
+                break
 
-        # 3. Fallback: If we have data but couldn't match the name, use the first file.
+            # B. Filename is inside User Query
+            # (e.g., "tlv beach" is inside "tel aviv (tlv beach)") -> THIS FIXES YOUR ISSUE
+            if clean_file_key in user_query:
+                df = self.weather_cache[file_key]
+                matched_key = file_key
+                break
+
+            # C. User Query is inside Filename
+            # (e.g., "haifa" is inside "haifa technion")
+            if user_query in clean_file_key:
+                df = self.weather_cache[file_key]
+                matched_key = file_key
+                break
+
+        # 3. Fallback: If no match found, warn and use the first available file
         if df is None and len(self.weather_cache) > 0:
-            print(f"DEBUG: Could not match city '{city}'. Using first available weather file.")
-            df = list(self.weather_cache.values())[0]
+            print(f"DEBUG: Could not match city '{city}'. Defaulting to first file.")
+            first_key = list(self.weather_cache.keys())[0]
+            df = self.weather_cache[first_key]
+            matched_key = first_key
 
         if df is None:
             return "Weather data not available."
 
-        # 4. Get the LATEST row (The most recent date in the file)
+        # 4. Get the LATEST row
         latest = df.iloc[-1]
 
         return (
-            f"Location: {latest.get('sname', 'Unknown')}\n"
+            f"Location: {latest.get('sname', 'Unknown')} (File: {matched_key})\n"
             f"Date/Time: {latest.get('date')}\n"
             f"Temperature: {latest.get('TD')}°C\n"
             f"Humidity: {latest.get('RH')}%\n"

@@ -10,3 +10,5 @@ langchain-pinecone
 tiktoken
 pandas
 sentence-transformers
+pinecone-client
+langchain-huggingface

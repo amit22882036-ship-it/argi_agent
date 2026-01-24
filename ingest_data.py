@@ -70,8 +70,10 @@ def main():
 
     # 4. Load and Chunk Data
     all_texts = []
-    # We purposefully look for 'source_*.json' to avoid ingesting the weather files
-    files = glob.glob("data/source_*.json")
+
+    # CHANGE: Look in 'output_data/' for source files
+    print("Looking for source files in output_data/ ...")
+    files = glob.glob("output_data/*.json")
 
     print(f"Found {len(files)} source files...")
 
