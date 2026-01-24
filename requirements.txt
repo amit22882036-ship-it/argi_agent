@@ -1,14 +1,12 @@
 fastapi
 uvicorn
 python-dotenv
-pinecone
 langchain
 langchain-core
 langchain-community
 langchain-openai
-langchain-pinecone
 tiktoken
 pandas
 sentence-transformers
-pinecone-client
 langchain-huggingface
+faiss-cpu

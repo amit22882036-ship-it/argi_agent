@@ -62,7 +62,21 @@
             border: 1px solid var(--border);
         }
 
-        /* Form */
+        /* Layout for City and Date inputs (Side-by-Side) */
+        .input-row {
+            display: grid;
+            grid-template-columns: 2fr 1fr; /* City gets 2/3 width, Date gets 1/3 */
+            gap: 15px;
+        }
+
+        /* Make it stack on mobile phones */
+        @media (max-width: 600px) {
+            .input-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Form Elements */
         .form-group {
             margin-bottom: 15px;
         }
@@ -85,6 +99,8 @@
             outline: 2px solid var(--primary);
             border-color: transparent;
         }
+
+        /* Button Styling */
         button {
             width: 100%;
             padding: 12px;
@@ -96,6 +112,9 @@
             font-weight: 600;
             cursor: pointer;
             transition: background 0.2s;
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
         button:hover {
             background-color: #1b5e20;
@@ -135,11 +154,10 @@
             border: 4px solid #f3f3f3;
             border-top: 4px solid var(--primary);
             border-radius: 50%;
-            width: 24px;
-            height: 24px;
+            width: 20px;
+            height: 20px;
             animation: spin 1s linear infinite;
-            margin: 0 auto;
-            display: none;
+            display: none; /* Hidden by default */
         }
 
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
@@ -160,28 +178,36 @@
         </header>
 
         <div class="card">
-            <div class="form-group">
-                <label for="city">City / Region</label>
-                <input type="text" id="city" list="cities" placeholder="Select or type a city (Press Enter)">
 
-                <datalist id="cities">
-                    <option value="Ariel">
-                    <option value="Ashdod">
-                    <option value="Ashkelon">
-                    <option value="Avne Eitan">
-                    <option value="Beer Sheva">
-                    <option value="Eilat">
-                    <option value="Hadera">
-                    <option value="Haifa (Bate Zakuk)">
-                    <option value="Haifa (Technion)">
-                    <option value="Jerusalem (Center)">
-                    <option value="Lev Kineret">
-                    <option value="Maale Gilboa">
-                    <option value="Nitzan">
-                    <option value="Tel Aviv (TLV Beach)">
-                    <option value="Yotvata">
-                    <option value="Zichron Yaakov">
-                </datalist>
+            <div class="input-row">
+                <div class="form-group">
+                    <label for="city">City / Region</label>
+                    <input type="text" id="city" list="cities" placeholder="Select or type a city...">
+
+                    <datalist id="cities">
+                        <option value="Ariel">
+                        <option value="Ashdod">
+                        <option value="Ashkelon">
+                        <option value="Avne Eitan">
+                        <option value="Beer Sheva">
+                        <option value="Eilat">
+                        <option value="Hadera">
+                        <option value="Haifa (Bate Zakuk)">
+                        <option value="Haifa (Technion)">
+                        <option value="Jerusalem (Center)">
+                        <option value="Lev Kineret">
+                        <option value="Maale Gilboa">
+                        <option value="Nitzan">
+                        <option value="Tel Aviv (TLV Beach)">
+                        <option value="Yotvata">
+                        <option value="Zichron Yaakov">
+                    </datalist>
+                </div>
+
+                <div class="form-group">
+                    <label for="date">Date (2025)</label>
+                    <input type="date" id="date" min="2025-01-01" max="2025-12-31">
+                </div>
             </div>
 
             <div class="form-group">
@@ -196,6 +222,7 @@
         </div>
 
         <div id="result-area">
+
             <div class="card" style="background: #f0f9ff; border-color: #bae6fd;">
                 <label style="color: #0369a1;">🌤️ Weather Context Used</label>
                 <div id="weather-display" class="weather-badge">Loading...</div>
@@ -210,14 +237,23 @@
     </div>
 
     <script>
+        // --- Initialization ---
+        // Set the default date to Jan 1st, 2025 (or today's date if year matches)
+        const dateInput = document.getElementById('date');
+        dateInput.value = "2025-01-01";
+
+        // --- Main Function ---
         async function getAdvice() {
             const city = document.getElementById('city').value;
             const query = document.getElementById('query').value;
+            const date = document.getElementById('date').value;
+
             const btn = document.getElementById('submit-btn');
             const btnText = document.getElementById('btn-text');
             const loader = document.getElementById('loader');
             const resultArea = document.getElementById('result-area');
 
+            // Validation
             if (!city || !query) {
                 alert("Please enter both a city and a question.");
                 return;
@@ -233,7 +269,11 @@
                 const response = await fetch('/get-advice', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ city: city, query: query })
+                    body: JSON.stringify({
+                        city: city,
+                        query: query,
+                        date: date
+                    })
                 });
 
                 if (!response.ok) throw new Error("API Error");

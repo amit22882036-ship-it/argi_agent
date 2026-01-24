@@ -15,11 +15,12 @@ class WeatherService:
             print(f"WARNING: Directory {self.data_dir} not found.")
             return
 
+        # Load all JSON files in the directory
         files = [f for f in os.listdir(self.data_dir) if f.endswith('.json')]
 
         print(f"--- Loading Weather Files from {self.data_dir} ---")
         for f in files:
-            # Clean key: 'haifa_technion.json' -> 'haifa_technion'
+            # Create a clean key (e.g., 'haifa_technion.json' -> 'haifa_technion')
             city_key = f.replace(".json", "").lower()
 
             try:
@@ -28,51 +29,51 @@ class WeatherService:
                     data = json.load(file)
                     df = pd.DataFrame(data)
 
-                    # Parse and Sort
+                    # 1. Parse Dates Correctly (Handle Day/Month/Year formats)
                     df['date'] = pd.to_datetime(df['date'], dayfirst=True)
+
+                    # 2. Sort by Date (Oldest -> Newest)
                     df = df.sort_values(by='date')
 
                     self.weather_cache[city_key] = df
             except Exception as e:
                 print(f"Error loading {f}: {e}")
 
-    def get_current_weather(self, city: str):
+    def get_weather(self, city: str, date_str: str = None):
         """
-        Finds the weather file for the city using smart matching.
+        Finds weather for a city.
+        If date_str is provided (YYYY-MM-DD), finds the closest data point (target 12:00).
+        Otherwise, returns the latest data point.
         """
-        # 1. Normalize User Input (e.g., "Tel Aviv (TLV Beach)" -> "tel aviv (tlv beach)")
         user_query = city.lower()
-
         df = None
         matched_key = None
 
-        # 2. Iterate through all loaded files to find the best match
+        # --- SMART MATCHING LOGIC ---
+        # 1. Iterate through all loaded files to find the best match
         for file_key in self.weather_cache:
             # Normalize file key: "tlv_beach" -> "tlv beach"
             clean_file_key = file_key.replace("_", " ")
 
-            # MATCHING LOGIC:
-            # A. Exact Match
+            # Check A: Exact match
             if user_query == clean_file_key:
                 df = self.weather_cache[file_key]
                 matched_key = file_key
                 break
 
-            # B. Filename is inside User Query
-            # (e.g., "tlv beach" is inside "tel aviv (tlv beach)") -> THIS FIXES YOUR ISSUE
+            # Check B: Filename is inside User Query (e.g., "tlv beach" inside "tel aviv (tlv beach)")
             if clean_file_key in user_query:
                 df = self.weather_cache[file_key]
                 matched_key = file_key
                 break
 
-            # C. User Query is inside Filename
-            # (e.g., "haifa" is inside "haifa technion")
+            # Check C: User Query is inside Filename (e.g., "haifa" inside "haifa technion")
             if user_query in clean_file_key:
                 df = self.weather_cache[file_key]
                 matched_key = file_key
                 break
 
-        # 3. Fallback: If no match found, warn and use the first available file
+        # Fallback: If no match found, use the first available file
         if df is None and len(self.weather_cache) > 0:
             print(f"DEBUG: Could not match city '{city}'. Defaulting to first file.")
             first_key = list(self.weather_cache.keys())[0]
@@ -82,14 +83,27 @@ class WeatherService:
         if df is None:
             return "Weather data not available."
 
-        # 4. Get the LATEST row
-        latest = df.iloc[-1]
+        # --- FIND THE CORRECT ROW ---
+        if date_str:
+            try:
+                # Target: Noon on the requested day
+                target_date = pd.to_datetime(f"{date_str} 12:00:00")
+
+                # Find the row with the timestamp closest to the target
+                closest_idx = (df['date'] - target_date).abs().idxmin()
+                selected_row = df.loc[closest_idx]
+            except Exception as e:
+                print(f"Date parsing error or data missing for date: {e}. Falling back to latest.")
+                selected_row = df.iloc[-1]
+        else:
+            # Default: Latest available data
+            selected_row = df.iloc[-1]
 
         return (
-            f"Location: {latest.get('sname', 'Unknown')} (File: {matched_key})\n"
-            f"Date/Time: {latest.get('date')}\n"
-            f"Temperature: {latest.get('TD')}°C\n"
-            f"Humidity: {latest.get('RH')}%\n"
-            f"Rainfall: {latest.get('Rain')} mm\n"
-            f"Wind Speed: {latest.get('WS')} m/s"
+            f"Location: {selected_row.get('sname', 'Unknown')} (File: {matched_key})\n"
+            f"Date/Time: {selected_row.get('date')}\n"
+            f"Temperature: {selected_row.get('TD')}°C\n"
+            f"Humidity: {selected_row.get('RH')}%\n"
+            f"Rainfall: {selected_row.get('Rain')} mm\n"
+            f"Wind Speed: {selected_row.get('WS')} m/s"
         )
