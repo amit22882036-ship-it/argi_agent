@@ -133,7 +133,7 @@ vectorstore = load_or_build_index()
 
 # --- 4. Initialize LLM (FIXED PARAMETERS) ---
 def get_llm_model():
-    api_key = "sk-dSNWWLThPC3-x60pbh3QRw"
+    api_key = os.getenv("LLMOD_API_KEY", "")
     base_url = os.getenv("LLMOD_API_BASE", "https://api.llmod.ai/v1")
 
     if api_key:
