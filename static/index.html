@@ -3,22 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Israel Agri-Advisor Agent</title>
+    <title>Israel Agri-Advisor Chat</title>
 
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌱</text></svg>">
-
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
-
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
 
     <style>
         :root {
-            --primary: #2e7d32; /* Agricultural Green */
+            --primary: #2e7d32;
+            --primary-dark: #1b5e20;
             --bg: #f3f4f6;
             --card-bg: #ffffff;
             --text: #1f2937;
             --border: #e5e7eb;
+            --user-msg-bg: #dcf8c6;
+            --bot-msg-bg: #f1f0f0;
         }
 
         body {
@@ -29,144 +30,168 @@
             padding: 20px;
             display: flex;
             justify-content: center;
+            height: 100vh;
+            box-sizing: border-box;
         }
 
         .container {
-            max-width: 800px;
+            max-width: 900px;
             width: 100%;
             display: flex;
             flex-direction: column;
-            gap: 20px;
+            gap: 15px;
+            height: 100%;
         }
 
         /* Header */
         header {
             text-align: center;
-            margin-bottom: 20px;
+            flex-shrink: 0;
         }
-        header h1 {
-            color: var(--primary);
-            margin: 0;
-        }
-        header p {
-            color: #6b7280;
-            margin-top: 5px;
-        }
+        header h1 { color: var(--primary); margin: 0; font-size: 1.8rem; }
+        header p { color: #6b7280; margin: 5px 0 0; font-size: 0.9rem; }
 
         /* Card Style */
         .card {
             background: var(--card-bg);
             border-radius: 12px;
-            padding: 24px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            padding: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
             border: 1px solid var(--border);
         }
 
-        /* Layout for City and Date inputs (Side-by-Side) */
-        .input-row {
+        /* Top Settings Bar */
+        .settings-bar {
             display: grid;
-            grid-template-columns: 2fr 1fr; /* City gets 2/3 width, Date gets 1/3 */
+            grid-template-columns: 2fr 1fr;
             gap: 15px;
+            flex-shrink: 0;
         }
 
-        /* Make it stack on mobile phones */
-        @media (max-width: 600px) {
-            .input-row {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        /* Form Elements */
-        .form-group {
-            margin-bottom: 15px;
-        }
-        label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 600;
-            font-size: 0.9rem;
-        }
-        input, select, textarea {
+        label { display: block; margin-bottom: 4px; font-weight: 600; font-size: 0.85rem; color: #4b5563; }
+        input, select {
             width: 100%;
             padding: 10px;
             border: 1px solid var(--border);
             border-radius: 8px;
-            font-family: inherit;
-            font-size: 1rem;
+            font-size: 0.95rem;
             box-sizing: border-box;
+            transition: border 0.2s;
         }
-        input:focus, textarea:focus {
-            outline: 2px solid var(--primary);
-            border-color: transparent;
+        input:focus { outline: none; border-color: var(--primary); }
+
+        /* Chat Window */
+        #chat-window {
+            flex-grow: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            padding: 20px;
+            background: #fafafa;
         }
 
-        /* Button Styling */
-        button {
-            width: 100%;
+        .message {
+            max-width: 80%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.5;
+            position: relative;
+            font-size: 0.95rem;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+        .message.user {
+            align-self: flex-end;
+            background-color: var(--primary);
+            color: white;
+            border-bottom-right-radius: 2px;
+        }
+
+        .message.bot {
+            align-self: flex-start;
+            background-color: white;
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-bottom-left-radius: 2px;
+        }
+
+        .message.error {
+            align-self: center;
+            background-color: #fee2e2;
+            color: #991b1b;
+            font-size: 0.85rem;
+        }
+
+        /* Input Area */
+        .input-area {
+            display: flex;
+            gap: 10px;
+            padding: 15px;
+            background: white;
+            border-top: 1px solid var(--border);
+            border-radius: 0 0 12px 12px; /* Rounded bottom */
+        }
+
+        textarea {
+            flex-grow: 1;
             padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-family: inherit;
+            resize: none;
+            height: 50px;
+        }
+        textarea:focus { outline: none; border-color: var(--primary); }
+
+        button {
+            padding: 0 25px;
             background-color: var(--primary);
             color: white;
             border: none;
             border-radius: 8px;
-            font-size: 1rem;
             font-weight: 600;
             cursor: pointer;
             transition: background 0.2s;
-            display: flex;
-            justify-content: center;
-            align-items: center;
         }
-        button:hover {
-            background-color: #1b5e20;
-        }
-        button:disabled {
-            background-color: #9ca3af;
-            cursor: not-allowed;
-        }
+        button:hover { background-color: var(--primary-dark); }
+        button:disabled { background-color: #9ca3af; cursor: not-allowed; }
 
-        /* Results Area */
-        #result-area {
-            display: none;
-            flex-direction: column;
-            gap: 20px;
-        }
-
-        .weather-badge {
-            background: #e0f2f1;
-            color: #00695c;
-            padding: 15px;
-            border-radius: 8px;
+        /* Weather Badge inside Chat */
+        .weather-info {
+            font-size: 0.75rem;
+            color: #6b7280;
+            margin-bottom: 5px;
             font-family: monospace;
-            white-space: pre-wrap;
-            font-size: 0.9rem;
-            border-left: 4px solid #009688;
+            background: #f3f4f6;
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: inline-block;
         }
 
-        .meta-info {
-            font-size: 0.8rem;
-            color: #9ca3af;
-            text-align: right;
-            margin-top: 10px;
+        /* Loading Dots */
+        .typing-indicator {
+            display: inline-flex;
+            gap: 4px;
+            padding: 10px 15px;
+            background: white;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            align-self: flex-start;
+            margin-bottom: 10px;
         }
+        .dot { width: 6px; height: 6px; background: #9ca3af; border-radius: 50%; animation: bounce 1.4s infinite ease-in-out; }
+        .dot:nth-child(1) { animation-delay: -0.32s; }
+        .dot:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }
 
-        /* Loading Spinner */
-        .loader {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid var(--primary);
-            border-radius: 50%;
-            width: 20px;
-            height: 20px;
-            animation: spin 1s linear infinite;
-            display: none; /* Hidden by default */
-        }
+        /* Markdown Styles fix */
+        .message.bot ul { padding-left: 20px; margin: 5px 0; }
+        .message.bot p { margin: 5px 0; }
+        .message.bot strong { color: var(--primary); }
 
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-
-        /* Markdown Styles */
-        .prose h3 { margin-top: 0; color: var(--primary); }
-        .prose ul { padding-left: 20px; }
-        .prose li { margin-bottom: 5px; }
-        .prose strong { color: #111827; }
     </style>
 </head>
 <body>
@@ -174,152 +199,147 @@
     <div class="container">
         <header>
             <h1>🌱 Israel Agri-Advisor</h1>
-            <p>AI-Powered Farming Advice based on Local Weather & Hebrew Literature</p>
+            <p>Smart Farming Chat with Context & Weather</p>
         </header>
 
-        <div class="card">
-
-            <div class="input-row">
-                <div class="form-group">
-                    <label for="city">City / Region</label>
-                    <input type="text" id="city" list="cities" placeholder="Select or type a city...">
-
-                    <datalist id="cities">
-                        <option value="Ariel">
-                        <option value="Ashdod">
-                        <option value="Ashkelon">
-                        <option value="Avne Eitan">
-                        <option value="Beer Sheva">
-                        <option value="Eilat">
-                        <option value="Hadera">
-                        <option value="Haifa (Bate Zakuk)">
-                        <option value="Haifa (Technion)">
-                        <option value="Jerusalem (Center)">
-                        <option value="Lev Kineret">
-                        <option value="Maale Gilboa">
-                        <option value="Nitzan">
-                        <option value="Tel Aviv (TLV Beach)">
-                        <option value="Yotvata">
-                        <option value="Zichron Yaakov">
-                    </datalist>
-                </div>
-
-                <div class="form-group">
-                    <label for="date">Date (2025)</label>
-                    <input type="date" id="date" min="2025-01-01" max="2025-12-31">
-                </div>
+        <div class="card settings-bar">
+            <div>
+                <label for="city">📍 Choose Location</label>
+                <input type="text" id="city" list="cities" placeholder="Select a city..." autocomplete="off">
+                <datalist id="cities">
+                    <option value="Ariel">
+                    <option value="Ashdod">
+                    <option value="Ashkelon">
+                    <option value="Avne Eitan">
+                    <option value="Beer Sheva">
+                    <option value="Eilat">
+                    <option value="Hadera">
+                    <option value="Haifa (Bate Zakuk)">
+                    <option value="Haifa (Technion)">
+                    <option value="Jerusalem (Center)">
+                    <option value="Lev Kineret">
+                    <option value="Maale Gilboa">
+                    <option value="Nitzan">
+                    <option value="Tel Aviv (TLV Beach)">
+                    <option value="Yotvata">
+                    <option value="Zichron Yaakov">
+                </datalist>
             </div>
-
-            <div class="form-group">
-                <label for="query">Question</label>
-                <textarea id="query" rows="3" placeholder="e.g. When is the best time to irrigate? (Ctrl+Enter to submit)"></textarea>
+            <div>
+                <label for="date">📅 Date</label>
+                <input type="date" id="date" value="2025-01-01">
             </div>
-
-            <button id="submit-btn" onclick="getAdvice()">
-                <span id="btn-text">Get Advice</span>
-                <div id="loader" class="loader"></div>
-            </button>
         </div>
 
-        <div id="result-area">
-
-            <div class="card" style="background: #f0f9ff; border-color: #bae6fd;">
-                <label style="color: #0369a1;">🌤️ Weather Context Used</label>
-                <div id="weather-display" class="weather-badge">Loading...</div>
+        <div id="chat-window" class="card">
+            <div class="message bot">
+                👋 שלום! אני היועץ החקלאי שלך.<br>
+                אנא בחר עיר למעלה ושאל אותי כל שאלה על גידולים, השקיה או דישון.
             </div>
+        </div>
 
-            <div class="card">
-                <label style="color: var(--primary);">🤖 Agent Advice</label>
-                <div id="advice-content" class="prose"></div>
-                <div id="meta-display" class="meta-info"></div>
-            </div>
+        <div class="input-area card">
+            <textarea id="query" placeholder="Type your question here... (Enter to send)"></textarea>
+            <button id="submit-btn" onclick="sendMessage()">Send</button>
         </div>
     </div>
 
     <script>
-        // --- Initialization ---
-        // Set the default date to Jan 1st, 2025 (or today's date if year matches)
-        const dateInput = document.getElementById('date');
-        dateInput.value = "2025-01-01";
+        // יצירת מזהה ייחודי לשיחה הזו
+        const sessionId = "sess_" + Math.random().toString(36).substr(2, 9);
+        const chatWindow = document.getElementById('chat-window');
+        const queryInput = document.getElementById('query');
+        const submitBtn = document.getElementById('submit-btn');
 
-        // --- Main Function ---
-        async function getAdvice() {
+        async function sendMessage() {
             const city = document.getElementById('city').value;
-            const query = document.getElementById('query').value;
             const date = document.getElementById('date').value;
+            const text = queryInput.value.trim();
 
-            const btn = document.getElementById('submit-btn');
-            const btnText = document.getElementById('btn-text');
-            const loader = document.getElementById('loader');
-            const resultArea = document.getElementById('result-area');
-
-            // Validation
-            if (!city || !query) {
-                alert("Please enter both a city and a question.");
+            if (!city) {
+                alert("Please select a city first! 📍");
                 return;
             }
+            if (!text) return;
 
-            // UI Loading State
-            btn.disabled = true;
-            btnText.style.display = 'none';
-            loader.style.display = 'block';
-            resultArea.style.display = 'none';
+            // 1. הוסף הודעת משתמש
+            appendMessage(text, 'user');
+            queryInput.value = '';
+
+            // הצג סימון "מקליד..."
+            const loaderId = showLoader();
 
             try {
+                // שליחה לשרת
                 const response = await fetch('/get-advice', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
+                        session_id: sessionId,
                         city: city,
-                        query: query,
+                        query: text,
                         date: date
                     })
                 });
 
-                if (!response.ok) throw new Error("API Error");
+                if (!response.ok) throw new Error("Server Error");
 
                 const data = await response.json();
 
-                // 1. Render Weather
-                document.getElementById('weather-display').innerText = data.weather_context_used;
+                // הסר סימון "מקליד"
+                removeLoader(loaderId);
 
-                // 2. Render Advice (Markdown -> HTML -> Sanitize)
+                // עיבוד התשובה
                 const rawHtml = marked.parse(data.advice);
                 const cleanHtml = DOMPurify.sanitize(rawHtml);
-                document.getElementById('advice-content').innerHTML = cleanHtml;
 
-                // 3. Render Meta Info
-                document.getElementById('meta-display').innerText = `Model Used: ${data.model_used}`;
+                // הוספת מידע על מזג אוויר בקטן מעל התשובה
+                const weatherSnippet = `<div class="weather-info">🌤️ Based on weather in ${city}: ${data.weather_context_used.split('\n')[2]}</div>`;
 
-                // Show Results
-                resultArea.style.display = 'flex';
+                appendMessage(weatherSnippet + cleanHtml, 'bot', true);
 
             } catch (error) {
-                alert("Failed to fetch advice. Please check the console.");
+                removeLoader(loaderId);
                 console.error(error);
-            } finally {
-                // Reset UI
-                btn.disabled = false;
-                btnText.style.display = 'inline';
-                loader.style.display = 'none';
+                appendMessage("⚠️ Error: Could not connect to the advisor. Please check the server console.", 'error');
             }
         }
 
-        // --- Keyboard Shortcuts ---
+        function appendMessage(content, type, isHtml = false) {
+            const div = document.createElement('div');
+            div.className = `message ${type}`;
+            if (isHtml) div.innerHTML = content;
+            else div.innerText = content;
 
-        // "Enter" on the City input triggers submit
-        document.getElementById('city').addEventListener('keypress', function (e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                getAdvice();
-            }
-        });
+            chatWindow.appendChild(div);
+            scrollToBottom();
+        }
 
-        // "Ctrl + Enter" (or Cmd + Enter) on the Textarea triggers submit
-        document.getElementById('query').addEventListener('keydown', function (e) {
-            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        function showLoader() {
+            const id = 'loader-' + Date.now();
+            const div = document.createElement('div');
+            div.className = 'typing-indicator';
+            div.id = id;
+            div.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
+            chatWindow.appendChild(div);
+            scrollToBottom();
+            return id;
+        }
+
+        function removeLoader(id) {
+            const el = document.getElementById(id);
+            if (el) el.remove();
+        }
+
+        function scrollToBottom() {
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        // Enter key to send (Shift+Enter for new line)
+        queryInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                getAdvice();
+                sendMessage();
             }
         });
     </script>

@@ -10,3 +10,4 @@ pandas
 sentence-transformers
 langchain-huggingface
 faiss-cpu
+pymupdf
