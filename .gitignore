@@ -1,1 +1,8 @@
 .env
+city_data/
+project_sources/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
