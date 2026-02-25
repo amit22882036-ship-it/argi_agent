@@ -4,6 +4,7 @@ import fitz
 import json
 import logging
 import time
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, Response
@@ -33,19 +34,17 @@ from pinecone import Pinecone, ServerlessSpec
 from weather_service import WeatherService
 
 load_dotenv()
-app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
 
-# --- 1. Supabase Setup ---
-_supabase = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_KEY")
-)
+# --- Globals initialised in lifespan (after port is bound) ---
+_supabase = None
+_agent_executor = None
+_advanced_retriever = None
+current_active_date = "2025-01-01"
 
 
-# --- Supabase helpers (replace all sqlite3 calls) ---
+# --- Supabase helpers ---
 def db_get_chat(chat_id: str):
     res = _supabase.table("chats").select("chat_id").eq("chat_id", chat_id).execute()
     return res.data[0] if res.data else None
@@ -59,13 +58,13 @@ def db_create_chat(chat_id: str, user_name: str, title: str):
 
 def db_get_history(chat_id: str):
     res = _supabase.table("messages").select("role, content").eq("chat_id", chat_id).order("id").execute()
-    return res.data  # list of {"role": ..., "content": ...}
+    return res.data
 
 
 def db_save_messages(chat_id: str, user_msg: str, bot_msg: str):
     _supabase.table("messages").insert([
         {"chat_id": chat_id, "role": "user", "content": user_msg},
-        {"chat_id": chat_id, "role": "bot", "content": bot_msg},
+        {"chat_id": chat_id, "role": "bot",  "content": bot_msg},
     ]).execute()
 
 
@@ -79,24 +78,11 @@ def db_delete_chat(chat_id: str):
     _supabase.table("chats").delete().eq("chat_id", chat_id).execute()
 
 
-current_active_date = "2025-01-01"
-
-# --- 2. LLM Setup ---
-llm = ChatOpenAI(
-    api_key=os.getenv("LLMOD_API_KEY"),
-    base_url=os.getenv("LLMOD_API_BASE", "https://api.llmod.ai/v1"),
-    model="RPRTHPB-gpt-5-mini",
-    temperature=1,
-    streaming=True
-)
-
-# --- 3. Pinecone RAG Setup (Multi-Query Retriever) ---
-weather_service = WeatherService()
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2", model_kwargs={"device": "cpu"})
+# --- Pinecone / RAG setup ---
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "agri-advisor")
 
 
-def load_index():
+def build_index(embeddings):
     pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
     existing = [idx.name for idx in pc.list_indexes()]
 
@@ -104,11 +90,11 @@ def load_index():
         print(f"[Pinecone] Creating index '{PINECONE_INDEX_NAME}'...")
         pc.create_index(
             name=PINECONE_INDEX_NAME,
-            dimension=384,          # all-MiniLM-L6-v2 output size
+            dimension=384,
             metric="cosine",
             spec=ServerlessSpec(cloud="aws", region="us-east-1")
         )
-        time.sleep(5)               # wait for index to be ready
+        time.sleep(5)
 
     index = pc.Index(PINECONE_INDEX_NAME)
     vs = PineconeVectorStore(index=index, embedding=embeddings)
@@ -117,7 +103,7 @@ def load_index():
     total_vectors = stats.total_vector_count
 
     if total_vectors == 0:
-        print("[Pinecone] Index is empty — indexing PDFs from project_sources/...")
+        print("[Pinecone] Index empty — indexing PDFs...")
         pdf_files = glob.glob("project_sources/*.pdf")
         docs_list = []
         for pdf in pdf_files:
@@ -136,73 +122,89 @@ def load_index():
             ).split_documents(docs_list)
             vs.add_documents(chunks)
             print(f"[Pinecone] Indexed {len(chunks)} chunks.")
-        else:
-            print("[Pinecone] No PDF files found in project_sources/.")
     else:
-        print(f"[Pinecone] Index ready — {total_vectors} vectors loaded.")
+        print(f"[Pinecone] Index ready — {total_vectors} vectors.")
 
     return vs
 
 
-vectorstore = load_index()
+# --- FastAPI lifespan: runs AFTER uvicorn binds the port ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _supabase, _agent_executor, _advanced_retriever
 
-if vectorstore:
-    advanced_retriever = MultiQueryRetriever.from_llm(
-        retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
-        llm=llm
+    print("[Startup] Connecting to Supabase...")
+    _supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+
+    print("[Startup] Loading LLM...")
+    llm = ChatOpenAI(
+        api_key=os.getenv("LLMOD_API_KEY"),
+        base_url=os.getenv("LLMOD_API_BASE", "https://api.llmod.ai/v1"),
+        model="RPRTHPB-gpt-5-mini",
+        temperature=1,
+        streaming=True
     )
-else:
-    advanced_retriever = None
 
-
-# --- 4. Tools Setup with Self-Correction ---
-def search_pdf(query: str):
-    if not advanced_retriever:
-        return "Error: No professional documents found in the system."
-
-    print(f"\n[RAG DEBUG] Starting Advanced RAG Search for: '{query}'")
-    docs = advanced_retriever.invoke(query)
-
-    if not docs:
-        print("[RAG DEBUG] No results found. Prompting agent to try again.")
-        return "NO RESULTS FOUND in the knowledge base. SYSTEM COMMAND: You MUST try calling this tool again using different, broader, or alternative agricultural keywords before answering the user."
-
-    return "\n\n".join([d.page_content for d in docs])
-
-
-def weather_tool_wrapper(city_input: str):
-    clean_city = str(city_input).replace("on", "").replace(current_active_date, "").strip()
-    full_query = f"{clean_city} on {current_active_date}"
-    return weather_service.get_weather(full_query)
-
-
-tools = [
-    Tool(
-        name="weather_lookup",
-        func=weather_tool_wrapper,
-        description="MUST be used for any weather or temperature request."
-    ),
-    Tool(
-        name="agri_knowledge_base",
-        func=search_pdf,
-        description="Search agricultural manuals. If it returns NO RESULTS, try again with different words."
+    print("[Startup] Loading embeddings model...")
+    embeddings = HuggingFaceEmbeddings(
+        model_name="all-MiniLM-L6-v2",
+        model_kwargs={"device": "cpu"}
     )
-]
 
-# --- 5. Agent Setup ---
-prompt = ChatPromptTemplate.from_messages([
-    ("system", """אתה אגרונום מומחה וידידותי בישראל.
+    print("[Startup] Connecting to Pinecone...")
+    vectorstore = build_index(embeddings)
+
+    if vectorstore:
+        _advanced_retriever = MultiQueryRetriever.from_llm(
+            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+            llm=llm
+        )
+
+    weather_service = WeatherService()
+
+    def search_pdf(query: str):
+        if not _advanced_retriever:
+            return "Error: No professional documents found in the system."
+        print(f"\n[RAG DEBUG] Advanced RAG Search: '{query}'")
+        docs = _advanced_retriever.invoke(query)
+        if not docs:
+            return "NO RESULTS FOUND in the knowledge base. SYSTEM COMMAND: You MUST try calling this tool again using different, broader, or alternative agricultural keywords before answering the user."
+        return "\n\n".join([d.page_content for d in docs])
+
+    def weather_tool_wrapper(city_input: str):
+        clean_city = str(city_input).replace("on", "").replace(current_active_date, "").strip()
+        return weather_service.get_weather(f"{clean_city} on {current_active_date}")
+
+    tools = [
+        Tool(name="weather_lookup",      func=weather_tool_wrapper, description="MUST be used for any weather or temperature request."),
+        Tool(name="agri_knowledge_base", func=search_pdf,           description="Search agricultural manuals. If it returns NO RESULTS, try again with different words."),
+    ]
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """אתה אגרונום מומחה וידידותי בישראל.
     1. בשיחות חולין: ענה בנימוס ואל תשתמש בכלים.
     2. בשאלות מקצועיות: חובה להשתמש בכלי 'weather_lookup'.
     3. ההקשר הנסתר שמועבר אליך מכיל את התאריך ("היום") והמיקום.
     4. חובה להשתמש בכלי 'agri_knowledge_base' לשאלות על גידולים. אם הכלי מחזיר שאין תוצאות, חובה עליך להפעיל אותו שוב עם מילות מפתח אחרות לפחות פעם אחת לפני שאתה מתייאש.
     5. ענה בעברית בלבד ובצורה מקצועית."""),
-    MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "{input}"),
-    MessagesPlaceholder(variable_name="agent_scratchpad"),
-])
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ])
 
-agent_executor = AgentExecutor(agent=create_openai_tools_agent(llm, tools, prompt), tools=tools, verbose=True)
+    _agent_executor = AgentExecutor(
+        agent=create_openai_tools_agent(llm, tools, prompt),
+        tools=tools,
+        verbose=True
+    )
+
+    print("[Startup] Agent ready.")
+    yield
+    # shutdown — nothing to clean up
+
+
+app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 # --- Steps Callback Handler ---
@@ -235,10 +237,7 @@ class StepsCallbackHandler(BaseCallbackHandler):
                 msg = getattr(gen, "message", None)
                 tool_calls = getattr(msg, "tool_calls", []) if msg else []
                 if tool_calls:
-                    response_data = {"tool_calls": [
-                        {"tool": tc.get("name"), "args": tc.get("args")}
-                        for tc in tool_calls
-                    ]}
+                    response_data = {"tool_calls": [{"tool": tc.get("name"), "args": tc.get("args")} for tc in tool_calls]}
                 else:
                     response_data = {"text": str(gen.text)[:500]}
         self.steps.append({
@@ -278,7 +277,7 @@ class ChatRequest(BaseModel):
     date: str
 
 
-# --- 6. API Routes ---
+# --- API Routes ---
 @app.get("/")
 async def home():
     return FileResponse("static/index.html")
@@ -295,7 +294,6 @@ async def execute(req: ExecuteRequest):
         if req.user_name and not db_get_chat(req.chat_id):
             title = f"{req.prompt[:15]}... | {req.city} | {req.date}"
             db_create_chat(req.chat_id, req.user_name, title)
-
         hist_rows = db_get_history(req.chat_id)
         history = [
             HumanMessage(content=r["content"]) if r["role"] == "user" else AIMessage(content=r["content"])
@@ -308,15 +306,13 @@ async def execute(req: ExecuteRequest):
 
     try:
         handler = StepsCallbackHandler()
-        result = agent_executor.invoke(
+        result = _agent_executor.invoke(
             {"input": full_input, "chat_history": history},
             config={"callbacks": [handler]}
         )
         answer = result.get("output", "")
-
         if req.chat_id:
             db_save_messages(req.chat_id, req.prompt, answer)
-
         return {"status": "ok", "error": None, "response": answer, "steps": handler.steps}
     except Exception as e:
         return {"status": "error", "error": str(e), "response": None, "steps": []}
@@ -324,8 +320,7 @@ async def execute(req: ExecuteRequest):
 
 @app.get("/api/model_architecture")
 async def model_architecture():
-    path = os.path.join("static", "architecture.png")
-    with open(path, "rb") as f:
+    with open(os.path.join("static", "architecture.png"), "rb") as f:
         data = f.read()
     return Response(content=data, media_type="image/png")
 
@@ -360,9 +355,9 @@ async def agent_info():
                     "כמות מים מומלצת: 6–8 מ\"מ לטפטוף."
                 ),
                 "steps": [
-                    {"module": "WeatherTool", "prompt": {"city": "beer sheva", "date": "2025-07-01"}, "response": {"temp": "34°C", "humidity": "22%", "rain": "0mm"}},
-                    {"module": "AgriKnowledgeBase", "prompt": {"query": "irrigation high temperature dry conditions"}, "response": {"source": "Managing Cover Crops Profitably", "excerpt": "Irrigate in early morning to minimize evaporation..."}},
-                    {"module": "AgentLLM", "prompt": {"system": "agricultural advisor", "context": "weather + rag results"}, "response": {"answer": "השקה בבוקר מוקדם, 6–8 מ\"מ"}}
+                    {"module": "WeatherTool",      "prompt": {"city": "beer sheva", "date": "2025-07-01"}, "response": {"temp": "34°C", "humidity": "22%", "rain": "0mm"}},
+                    {"module": "AgriKnowledgeBase", "prompt": {"query": "irrigation high temperature dry conditions"}, "response": {"excerpt": "Irrigate in early morning to minimize evaporation..."}},
+                    {"module": "AgentLLM",          "prompt": {"context": "weather + rag results"}, "response": {"answer": "השקה בבוקר מוקדם, 6–8 מ\"מ"}}
                 ]
             },
             {
@@ -373,8 +368,8 @@ async def agent_info():
                 ),
                 "steps": [
                     {"module": "AgriKnowledgeBase", "prompt": {"query": "wheat sowing season Israel"}, "response": {"excerpt": "Optimal wheat sowing in Israel: October–November..."}},
-                    {"module": "WeatherTool", "prompt": {"city": "nitzan", "date": "2025-10-15"}, "response": {"temp": "24°C", "humidity": "55%", "rain": "3mm"}},
-                    {"module": "AgentLLM", "prompt": {"system": "agricultural advisor", "context": "rag + weather"}, "response": {"answer": "זרע בסוף אוקטובר"}}
+                    {"module": "WeatherTool",        "prompt": {"city": "nitzan", "date": "2025-10-15"}, "response": {"temp": "24°C", "humidity": "55%", "rain": "3mm"}},
+                    {"module": "AgentLLM",           "prompt": {"context": "rag + weather"}, "response": {"answer": "זרע בסוף אוקטובר"}}
                 ]
             }
         ]
@@ -412,30 +407,24 @@ async def get_advice(req: ChatRequest):
     async def event_generator():
         full_input = f"[הקשר נסתר: התאריך היום הוא {req.date}, המיקום הוא {req.city}]\nהודעת המשתמש: {req.query}"
         final_answer = ""
-
         try:
             yield f"data: {json.dumps({'type': 'status', 'message': '🤔 מנתח את הבקשה...'})}\n\n"
-
-            async for event in agent_executor.astream_events(
+            async for event in _agent_executor.astream_events(
                 {"input": full_input, "chat_history": history}, version="v2"
             ):
                 kind = event["event"]
-
                 if kind == "on_tool_start":
                     if event["name"] == "weather_lookup":
                         yield f"data: {json.dumps({'type': 'status', 'message': '🌤️ שולף נתוני אקלים למיקום זה...'})}\n\n"
                     elif event["name"] == "agri_knowledge_base":
                         yield f"data: {json.dumps({'type': 'status', 'message': '📚 מחפש ידע בחקלאות חכמה...'})}\n\n"
-
                 elif kind == "on_chat_model_stream":
                     chunk = event["data"]["chunk"]
                     if hasattr(chunk, "content") and isinstance(chunk.content, str) and chunk.content:
                         final_answer += chunk.content
                         yield f"data: {json.dumps({'type': 'token', 'text': chunk.content})}\n\n"
-
             db_save_messages(req.chat_id, req.query, final_answer)
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
         except Exception as e:
             print(f"Streaming Error: {e}")
             yield f"data: {json.dumps({'type': 'error', 'message': 'שגיאה בחיבור למודל המחשבה.'})}\n\n"
