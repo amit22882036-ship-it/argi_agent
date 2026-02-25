@@ -120,10 +120,13 @@ class WeatherService:
             lines.append(f"Humidity: {row.get('RH')}%")
         if row.get('Rain') is not None:
             lines.append(f"Rainfall: {row.get('Rain')} mm")
-        # Include any other available columns
+        # Include all remaining columns (skip already-formatted ones and empty/dash values)
         skip = {'date', 'TD', 'RH', 'Rain'}
-        extras = {k: v for k, v in row.items() if k not in skip and pd.notna(v) if not isinstance(v, str)}
-        for k, v in extras.items():
+        for k, v in row.items():
+            if k in skip:
+                continue
+            if v is None or v == '-' or (isinstance(v, float) and pd.isna(v)):
+                continue
             lines.append(f"{k}: {v}")
 
         return "\n".join(lines)
