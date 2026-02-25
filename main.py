@@ -141,7 +141,7 @@ def _init_services():
             api_key=os.getenv("LLMOD_API_KEY"),
             base_url=os.getenv("LLMOD_API_BASE", "https://api.llmod.ai/v1"),
             model="RPRTHPB-gpt-5-mini",
-            temperature=1,
+            temperature=0.7,
             streaming=True
         )
 
@@ -192,7 +192,7 @@ def _init_services():
         _agent_executor = AgentExecutor(
             agent=create_openai_tools_agent(llm, tools, prompt),
             tools=tools,
-            verbose=True
+            verbose=False
         )
         print("[Init] Agent ready ✓")
 
