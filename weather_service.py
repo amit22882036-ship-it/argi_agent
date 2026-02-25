@@ -32,9 +32,6 @@ class WeatherService:
             df = pd.DataFrame(data)
             del data  # free the raw JSON list immediately
             gc.collect()
-            # Keep only the columns we use — drops ~80% of memory per city
-            keep = [c for c in ('date', 'TD', 'RH', 'Rain') if c in df.columns]
-            df = df[keep].copy()
             df['date'] = pd.to_datetime(df['date'], dayfirst=True).dt.tz_localize(None)
             df = df.sort_values(by='date').reset_index(drop=True)
             self.weather_cache[city_key] = df
