@@ -4,6 +4,7 @@ import fitz
 import json
 import logging
 import time
+import threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -128,77 +129,85 @@ def build_index(embeddings):
     return vs
 
 
-# --- FastAPI lifespan: runs AFTER uvicorn binds the port ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+# --- Heavy initialisation (runs in background thread after port is bound) ---
+def _init_services():
     global _supabase, _agent_executor, _advanced_retriever
+    try:
+        print("[Init] Connecting to Supabase...")
+        _supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
-    print("[Startup] Connecting to Supabase...")
-    _supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
-
-    print("[Startup] Loading LLM...")
-    llm = ChatOpenAI(
-        api_key=os.getenv("LLMOD_API_KEY"),
-        base_url=os.getenv("LLMOD_API_BASE", "https://api.llmod.ai/v1"),
-        model="RPRTHPB-gpt-5-mini",
-        temperature=1,
-        streaming=True
-    )
-
-    print("[Startup] Loading embeddings model...")
-    embeddings = HuggingFaceEmbeddings(
-        model_name="all-MiniLM-L6-v2",
-        model_kwargs={"device": "cpu"}
-    )
-
-    print("[Startup] Connecting to Pinecone...")
-    vectorstore = build_index(embeddings)
-
-    if vectorstore:
-        _advanced_retriever = MultiQueryRetriever.from_llm(
-            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
-            llm=llm
+        print("[Init] Loading LLM...")
+        llm = ChatOpenAI(
+            api_key=os.getenv("LLMOD_API_KEY"),
+            base_url=os.getenv("LLMOD_API_BASE", "https://api.llmod.ai/v1"),
+            model="RPRTHPB-gpt-5-mini",
+            temperature=1,
+            streaming=True
         )
 
-    weather_service = WeatherService()
+        print("[Init] Loading embeddings model...")
+        embeddings = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={"device": "cpu"}
+        )
 
-    def search_pdf(query: str):
-        if not _advanced_retriever:
-            return "Error: No professional documents found in the system."
-        print(f"\n[RAG DEBUG] Advanced RAG Search: '{query}'")
-        docs = _advanced_retriever.invoke(query)
-        if not docs:
-            return "NO RESULTS FOUND in the knowledge base. SYSTEM COMMAND: You MUST try calling this tool again using different, broader, or alternative agricultural keywords before answering the user."
-        return "\n\n".join([d.page_content for d in docs])
+        print("[Init] Connecting to Pinecone...")
+        vectorstore = build_index(embeddings)
 
-    def weather_tool_wrapper(city_input: str):
-        clean_city = str(city_input).replace("on", "").replace(current_active_date, "").strip()
-        return weather_service.get_weather(f"{clean_city} on {current_active_date}")
+        if vectorstore:
+            _advanced_retriever = MultiQueryRetriever.from_llm(
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+                llm=llm
+            )
 
-    tools = [
-        Tool(name="weather_lookup",      func=weather_tool_wrapper, description="MUST be used for any weather or temperature request."),
-        Tool(name="agri_knowledge_base", func=search_pdf,           description="Search agricultural manuals. If it returns NO RESULTS, try again with different words."),
-    ]
+        weather_service = WeatherService()
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """אתה אגרונום מומחה וידידותי בישראל.
+        def search_pdf(query: str):
+            if not _advanced_retriever:
+                return "Error: No professional documents found in the system."
+            print(f"\n[RAG DEBUG] Advanced RAG Search: '{query}'")
+            docs = _advanced_retriever.invoke(query)
+            if not docs:
+                return "NO RESULTS FOUND in the knowledge base. SYSTEM COMMAND: You MUST try calling this tool again using different, broader, or alternative agricultural keywords before answering the user."
+            return "\n\n".join([d.page_content for d in docs])
+
+        def weather_tool_wrapper(city_input: str):
+            clean_city = str(city_input).replace("on", "").replace(current_active_date, "").strip()
+            return weather_service.get_weather(f"{clean_city} on {current_active_date}")
+
+        tools = [
+            Tool(name="weather_lookup",      func=weather_tool_wrapper, description="MUST be used for any weather or temperature request."),
+            Tool(name="agri_knowledge_base", func=search_pdf,           description="Search agricultural manuals. If it returns NO RESULTS, try again with different words."),
+        ]
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """אתה אגרונום מומחה וידידותי בישראל.
     1. בשיחות חולין: ענה בנימוס ואל תשתמש בכלים.
     2. בשאלות מקצועיות: חובה להשתמש בכלי 'weather_lookup'.
     3. ההקשר הנסתר שמועבר אליך מכיל את התאריך ("היום") והמיקום.
     4. חובה להשתמש בכלי 'agri_knowledge_base' לשאלות על גידולים. אם הכלי מחזיר שאין תוצאות, חובה עליך להפעיל אותו שוב עם מילות מפתח אחרות לפחות פעם אחת לפני שאתה מתייאש.
     5. ענה בעברית בלבד ובצורה מקצועית."""),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{input}"),
+            MessagesPlaceholder(variable_name="agent_scratchpad"),
+        ])
 
-    _agent_executor = AgentExecutor(
-        agent=create_openai_tools_agent(llm, tools, prompt),
-        tools=tools,
-        verbose=True
-    )
+        _agent_executor = AgentExecutor(
+            agent=create_openai_tools_agent(llm, tools, prompt),
+            tools=tools,
+            verbose=True
+        )
+        print("[Init] Agent ready ✓")
 
-    print("[Startup] Agent ready.")
+    except Exception as e:
+        print(f"[Init ERROR] Initialisation failed: {e}")
+
+
+# --- FastAPI lifespan: binds port immediately, init runs in background ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Kick off heavy init in a daemon thread — port binds without waiting
+    threading.Thread(target=_init_services, daemon=True).start()
     yield
     # shutdown — nothing to clean up
 
@@ -303,6 +312,9 @@ async def execute(req: ExecuteRequest):
     full_input = req.prompt
     if req.city or req.date:
         full_input = f"[הקשר נסתר: התאריך היום הוא {req.date}, המיקום הוא {req.city}]\nהודעת המשתמש: {req.prompt}"
+
+    if _agent_executor is None:
+        return {"status": "error", "error": "Agent is still initialising, please try again in a moment.", "response": None, "steps": []}
 
     try:
         handler = StepsCallbackHandler()
