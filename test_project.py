@@ -4,12 +4,14 @@ Tests all required API endpoints from the project spec.
 Run while main.py is already running on http://127.0.0.1:8000
 """
 
+import os
 import requests
-import json
 import time
 import uuid
 
-BASE = "http://127.0.0.1:8000"
+# Default to the live Render deployment; override with BASE_URL env var for local testing
+# e.g.  BASE_URL=http://127.0.0.1:8000 python test_project.py
+BASE = os.getenv("BASE_URL", "https://agents-960290.onrender.com")
 RESULTS = []
 
 # ── helpers ──────────────────────────────────────────────────────────────────
