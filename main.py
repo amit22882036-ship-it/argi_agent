@@ -23,7 +23,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 
 # --- RAG Imports ---
 from langchain_pinecone import PineconeVectorStore
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_classic.retrievers.multi_query import MultiQueryRetriever
@@ -146,10 +146,7 @@ def _init_services():
         )
 
         print("[Init] Loading embeddings model...")
-        embeddings = HuggingFaceEmbeddings(
-            model_name="all-MiniLM-L6-v2",
-            model_kwargs={"device": "cpu"}
-        )
+        embeddings = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
         print("[Init] Connecting to Pinecone...")
         vectorstore = build_index(embeddings)
