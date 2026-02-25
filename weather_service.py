@@ -8,37 +8,58 @@ import re
 class WeatherService:
     def __init__(self, data_dir="city_data"):
         self.data_dir = data_dir
-        self.weather_cache = {}  # lazy: loaded on first use
-        # Index available city keys without loading file contents
+        # Cache only the resolved row (city_key, date_str) -> row dict — not the full DataFrame
+        self._row_cache = {}
         if os.path.exists(data_dir):
             self._available = {f.replace(".json", "").lower(): f
                                for f in os.listdir(data_dir) if f.endswith('.json')}
-            print(f"--- Weather Service ready: {len(self._available)} cities indexed (lazy load) ---")
+            print(f"--- Weather Service ready: {len(self._available)} cities indexed ---")
         else:
             self._available = {}
             print(f"WARNING: Directory {data_dir} not found.")
 
-    def _load_city(self, city_key: str):
-        """Load a single city file into cache on first access."""
-        if city_key in self.weather_cache:
-            return self.weather_cache[city_key]
+    def _find_row(self, city_key: str, date_str: str):
+        """
+        Load the city file, find the closest row to date_str, cache the row dict,
+        then immediately discard the full DataFrame to keep memory flat.
+        """
+        cache_key = (city_key, date_str)
+        if cache_key in self._row_cache:
+            return self._row_cache[cache_key], city_key
+
         filename = self._available.get(city_key)
         if not filename:
-            return None
+            return None, city_key
+
         try:
             file_path = os.path.join(self.data_dir, filename)
             with open(file_path, 'r', encoding='utf-8') as fh:
                 data = json.load(fh)
+
             df = pd.DataFrame(data)
-            del data  # free the raw JSON list immediately
+            del data
             gc.collect()
+
             df['date'] = pd.to_datetime(df['date'], dayfirst=True).dt.tz_localize(None)
-            df = df.sort_values(by='date').reset_index(drop=True)
-            self.weather_cache[city_key] = df
-            return df
+
+            if date_str:
+                target = pd.to_datetime(f"{date_str} 12:00:00").tz_localize(None)
+                idx = (df['date'] - target).abs().idxmin()
+                row = df.loc[idx].to_dict()
+                print(f"[SUCCESS] {city_key}: requested {date_str} → matched {row.get('date')}")
+            else:
+                row = df.iloc[-1].to_dict()
+                print(f"[WARNING] No date in query, using last row for {city_key}")
+
+            del df
+            gc.collect()
+
+            self._row_cache[cache_key] = row
+            return row, city_key
+
         except Exception as e:
             print(f"Error loading {filename}: {e}")
-            return None
+            return None, city_key
 
     def get_weather(self, query: str):
         """
@@ -67,49 +88,42 @@ class WeatherService:
                 pass
 
         user_query = city.lower().strip()
-        df = None
         matched_key = None
 
-        # --- בחירת הקובץ המתאים (lazy load) ---
+        # --- בחירת הקובץ המתאים ---
         for file_key in self._available:
             clean_file_key = file_key.replace("_", " ")
             if user_query == clean_file_key or clean_file_key in user_query or user_query in clean_file_key:
-                df = self._load_city(file_key)
                 matched_key = file_key
                 break
 
-        if df is None and len(self._available) > 0:
-            first_key = list(self._available.keys())[0]
-            df = self._load_city(first_key)
-            matched_key = first_key
+        if matched_key is None and len(self._available) > 0:
+            matched_key = list(self._available.keys())[0]
 
-        if df is None:
+        if matched_key is None:
             return "Error: No weather data available."
 
-        # --- מציאת השורה של התאריך המבוקש ---
-        if date_str:
-            try:
-                # יצירת תאריך מטרה (ללא אזור זמן) לשעה 12:00 בצהריים
-                target_date = pd.to_datetime(f"{date_str} 12:00:00").tz_localize(None)
+        row, matched_key = self._find_row(matched_key, date_str)
 
-                # מציאת האינדקס של השורה עם התאריך הכי קרוב
-                closest_idx = (df['date'] - target_date).abs().idxmin()
-                selected_row = df.loc[closest_idx]
+        if row is None:
+            return "Error: Could not load weather data."
 
-                print(f"[SUCCESS] Matched Requested Date: {date_str} -> Found Data Date: {selected_row['date']}")
-            except Exception as e:
-                print(f"[CRITICAL ERROR] Failed to calculate closest date: {e}")
-                selected_row = df.iloc[-1]
-        else:
-            print("[WARNING] No date found in query, using last row.")
-            selected_row = df.iloc[-1]
+        # Build response with all available columns
+        lines = [
+            "!!! CRITICAL INSTRUCTION: TREAT THIS SPECIFIC DATE AS 'TODAY' !!!",
+            f"Location: {matched_key}",
+            f"Weather Data Date: {row.get('date')}",
+        ]
+        if row.get('TD') is not None:
+            lines.append(f"Temperature: {row.get('TD')}°C")
+        if row.get('RH') is not None:
+            lines.append(f"Humidity: {row.get('RH')}%")
+        if row.get('Rain') is not None:
+            lines.append(f"Rainfall: {row.get('Rain')} mm")
+        # Include any other available columns
+        skip = {'date', 'TD', 'RH', 'Rain'}
+        extras = {k: v for k, v in row.items() if k not in skip and pd.notna(v) if not isinstance(v, str)}
+        for k, v in extras.items():
+            lines.append(f"{k}: {v}")
 
-        # החזרת הנתונים לסוכן בצורה שתכריח אותו להבין שזה "היום"
-        return (
-            f"!!! CRITICAL INSTRUCTION: TREAT THIS SPECIFIC DATE AS 'TODAY' !!!\n"
-            f"Location: {matched_key}\n"
-            f"Weather Data Date: {selected_row.get('date')}\n"
-            f"Temperature: {selected_row.get('TD')}°C\n"
-            f"Humidity: {selected_row.get('RH')}%\n"
-            f"Rainfall: {selected_row.get('Rain')} mm\n"
-        )
+        return "\n".join(lines)
