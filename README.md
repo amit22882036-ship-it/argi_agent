@@ -30,8 +30,8 @@ An AI-powered agricultural advisory agent for Israeli farmers, built with LangCh
 - **Full weather columns** — all 16 measurement columns (TD, TDmax, TDmin, RH, Rain, WS, WSmax, WD, STDwd, etc.) are preserved and passed to the agent.
 - **Partial window handling** — if fewer than 7 or 30 days of history exist for a date, the system reports however many days are actually available.
 - **Background initialisation** — the server binds its port immediately on startup; Supabase, LLM, embeddings, and Pinecone connect in a background thread so the service is never slow to come up.
-- **Lazy Pinecone indexing** — PDFs are only indexed if the Pinecone index is empty; subsequent restarts skip indexing entirely.
-- **Multi-city weather coverage** — 16 Israeli weather stations, matched by fuzzy name lookup.
+- **Lazy Pinecone indexing** — PDFs are only indexed if the Pinecone index is empty; subsequent restarts skip indexing entirely, recommended to embedd pdf's locally to pinecone before loading website on (in our case) render.com.
+- **Multi-city weather coverage** — 16 Israeli weather stations, matched by fuzzy name lookup over the year of 2025.
 
 ---
 
