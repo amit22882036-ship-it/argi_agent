@@ -295,25 +295,25 @@ async def execute(req: ExecuteRequest):
     if req.date:
         current_active_date = req.date
 
-    history = []
-    if req.chat_id:
-        if req.user_name and not db_get_chat(req.chat_id):
-            title = f"{req.prompt[:15]}... | {req.city} | {req.date}"
-            db_create_chat(req.chat_id, req.user_name, title)
-        hist_rows = db_get_history(req.chat_id)
-        history = [
-            HumanMessage(content=r["content"]) if r["role"] == "user" else AIMessage(content=r["content"])
-            for r in hist_rows
-        ]
+    if _agent_executor is None or _supabase is None:
+        return {"status": "error", "error": "Agent is still initialising, please try again in a moment.", "response": None, "steps": []}
 
     full_input = req.prompt
     if req.city or req.date:
         full_input = f"[הקשר נסתר: התאריך היום הוא {req.date}, המיקום הוא {req.city}]\nהודעת המשתמש: {req.prompt}"
 
-    if _agent_executor is None:
-        return {"status": "error", "error": "Agent is still initialising, please try again in a moment.", "response": None, "steps": []}
-
     try:
+        history = []
+        if req.chat_id:
+            if req.user_name and not db_get_chat(req.chat_id):
+                title = f"{req.prompt[:15]}... | {req.city} | {req.date}"
+                db_create_chat(req.chat_id, req.user_name, title)
+            hist_rows = db_get_history(req.chat_id)
+            history = [
+                HumanMessage(content=r["content"]) if r["role"] == "user" else AIMessage(content=r["content"])
+                for r in hist_rows
+            ]
+
         handler = StepsCallbackHandler()
         result = _agent_executor.invoke(
             {"input": full_input, "chat_history": history},
