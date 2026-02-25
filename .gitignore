@@ -1,6 +1,8 @@
 .env
-city_data/
-project_sources/
+*.db
+
+# macOS
+.DS_Store
 
 # Python
 __pycache__/

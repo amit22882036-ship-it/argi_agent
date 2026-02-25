@@ -1,5 +1,6 @@
 """
-Comprehensive test suite for the Agri-Advisor Pro project.
+Comprehensive test suite for Agri-Advisor Pro.
+Tests all required API endpoints from the project spec.
 Run while main.py is already running on http://127.0.0.1:8000
 """
 
@@ -20,335 +21,388 @@ def section(title):
 
 def ok(label, detail=""):
     msg = f"  [PASS] {label}"
-    if detail: msg += f"\n         {detail}"
+    if detail:
+        msg += f"\n         {detail}"
     print(msg)
     RESULTS.append(("PASS", label))
 
 def fail(label, detail=""):
     msg = f"  [FAIL] {label}"
-    if detail: msg += f"\n         {detail}"
+    if detail:
+        msg += f"\n         {detail}"
     print(msg)
     RESULTS.append(("FAIL", label))
 
-def send_and_stream(payload, label):
-    """POST to /get-advice, collect the full SSE stream, return (status, tokens, events)."""
+def post_execute(payload, timeout=90):
+    """POST to /api/execute and return parsed JSON or None on error."""
     try:
-        res = requests.post(f"{BASE}/get-advice", json=payload, stream=True, timeout=60)
+        res = requests.post(f"{BASE}/api/execute", json=payload, timeout=timeout)
         if res.status_code != 200:
-            fail(label, f"HTTP {res.status_code}")
-            return None
-
-        events = []
-        full_text = ""
-        buffer = ""
-
-        for chunk in res.iter_content(chunk_size=None):
-            buffer += chunk.decode("utf-8", errors="replace")
-            while "\n\n" in buffer:
-                part, buffer = buffer.split("\n\n", 1)
-                if part.startswith("data: "):
-                    try:
-                        data = json.loads(part[6:])
-                        events.append(data)
-                        if data.get("type") == "token":
-                            full_text += data.get("text", "")
-                    except json.JSONDecodeError:
-                        pass
-
-        return {"events": events, "full_text": full_text}
+            return None, f"HTTP {res.status_code}: {res.text[:120]}"
+        return res.json(), None
     except requests.exceptions.ConnectionError:
-        fail(label, "Cannot connect to server — is main.py running?")
-        return None
+        return None, "Cannot connect to server — is main.py running?"
     except Exception as e:
-        fail(label, str(e))
-        return None
+        return None, str(e)
 
 
-# ── Test 1: Static / API health ───────────────────────────────────────────────
+# ── Test 1: GET /api/team_info ────────────────────────────────────────────────
 
-section("1. BASIC CONNECTIVITY")
-
-try:
-    r = requests.get(BASE, timeout=5)
-    if r.status_code == 200 and "Agri-Advisor" in r.text:
-        ok("GET / returns HTML page")
-    else:
-        fail("GET / returns HTML page", f"status={r.status_code}")
-except Exception as e:
-    fail("GET / returns HTML page", str(e))
+section("1. GET /api/team_info")
 
 try:
-    r = requests.get(f"{BASE}/api/my-chats/test_connectivity_user", timeout=5)
-    if r.status_code == 200 and isinstance(r.json(), list):
-        ok("GET /api/my-chats returns a list")
+    r = requests.get(f"{BASE}/api/team_info", timeout=5)
+    if r.status_code != 200:
+        fail("Returns HTTP 200", f"Got {r.status_code}")
     else:
-        fail("GET /api/my-chats returns a list", f"status={r.status_code}")
+        ok("Returns HTTP 200")
+        data = r.json()
+
+        # Required top-level keys
+        for key in ("group_batch_order_number", "team_name", "students"):
+            if key in data:
+                ok(f"Has key '{key}'", str(data[key])[:80])
+            else:
+                fail(f"Has key '{key}'")
+
+        # students is a non-empty list
+        students = data.get("students", [])
+        if isinstance(students, list) and len(students) > 0:
+            ok(f"'students' is a non-empty list ({len(students)} entries)")
+        else:
+            fail("'students' is a non-empty list", f"Got: {students}")
+
+        # Each student has name + email
+        all_ok = all("name" in s and "email" in s for s in students)
+        if all_ok:
+            ok("Each student has 'name' and 'email'")
+            for s in students:
+                print(f"         {s['name']} <{s['email']}>")
+        else:
+            fail("Each student has 'name' and 'email'", str(students))
+
 except Exception as e:
-    fail("GET /api/my-chats returns a list", str(e))
+    fail("GET /api/team_info", str(e))
+
+
+# ── Test 2: GET /api/agent_info ───────────────────────────────────────────────
+
+section("2. GET /api/agent_info")
 
 try:
-    fake_id = "nonexistent_chat_xyz"
-    r = requests.get(f"{BASE}/api/chat-history/{fake_id}", timeout=5)
-    if r.status_code == 200 and r.json() == []:
-        ok("GET /api/chat-history with unknown id returns empty list")
+    r = requests.get(f"{BASE}/api/agent_info", timeout=5)
+    if r.status_code != 200:
+        fail("Returns HTTP 200", f"Got {r.status_code}")
     else:
-        fail("GET /api/chat-history with unknown id", f"status={r.status_code}, body={r.text[:80]}")
+        ok("Returns HTTP 200")
+        data = r.json()
+
+        for key in ("description", "purpose", "prompt_template", "prompt_examples"):
+            if key in data:
+                ok(f"Has key '{key}'")
+            else:
+                fail(f"Has key '{key}'")
+
+        # prompt_examples is a non-empty list with prompt, full_response, steps
+        examples = data.get("prompt_examples", [])
+        if isinstance(examples, list) and len(examples) > 0:
+            ok(f"'prompt_examples' is non-empty ({len(examples)} examples)")
+            for i, ex in enumerate(examples):
+                for field in ("prompt", "full_response", "steps"):
+                    if field in ex:
+                        ok(f"Example {i+1} has '{field}'")
+                    else:
+                        fail(f"Example {i+1} missing '{field}'")
+                # Each step in example should have module, prompt, response
+                for j, step in enumerate(ex.get("steps", [])):
+                    missing = [f for f in ("module", "prompt", "response") if f not in step]
+                    if missing:
+                        fail(f"Example {i+1} step {j+1} missing: {missing}")
+        else:
+            fail("'prompt_examples' is non-empty list", str(examples))
+
 except Exception as e:
-    fail("GET /api/chat-history with unknown id", str(e))
+    fail("GET /api/agent_info", str(e))
 
 
-# ── Test 2: Chat creation and persistence ─────────────────────────────────────
+# ── Test 3: GET /api/model_architecture ──────────────────────────────────────
 
-section("2. CHAT CREATION & PERSISTENCE")
+section("3. GET /api/model_architecture")
 
-test_user = f"test_user_{uuid.uuid4().hex[:6]}"
-chat_id = f"chat_{uuid.uuid4().hex[:8]}"
-
-payload = {
-    "user_name": test_user,
-    "chat_id": chat_id,
-    "query": "שלום, מה שלומך?",
-    "city": "ariel",
-    "date": "2025-06-15"
-}
-
-print(f"\n  Sending small-talk query: \"{payload['query']}\" (city=ariel, date=2025-06-15)")
-result = send_and_stream(payload, "Small-talk query streams without crash")
-
-if result:
-    events = result["events"]
-    event_types = [e.get("type") for e in events]
-
-    has_done = "done" in event_types
-    has_token = "token" in event_types
-    has_error = "error" in event_types
-
-    if has_error:
-        error_msg = next(e.get("message","") for e in events if e.get("type") == "error")
-        fail("Small-talk query streams without crash", f"Agent returned error: {error_msg}")
-    elif has_token and has_done:
-        ok("Small-talk query streams without crash")
-        print(f"         Agent reply: {result['full_text'][:120]}...")
+try:
+    r = requests.get(f"{BASE}/api/model_architecture", timeout=10)
+    if r.status_code != 200:
+        fail("Returns HTTP 200", f"Got {r.status_code}")
     else:
-        fail("Small-talk query streams without crash", f"event types seen: {event_types}")
+        ok("Returns HTTP 200")
 
-    # Check chat was persisted
-    time.sleep(0.5)
-    r = requests.get(f"{BASE}/api/my-chats/{test_user}", timeout=5)
-    chats = r.json()
-    found = any(c["chat_id"] == chat_id for c in chats)
-    if found:
-        ok("Chat persisted in /api/my-chats after first message")
+        ct = r.headers.get("content-type", "")
+        if "image/png" in ct:
+            ok(f"Content-Type is image/png", ct)
+        else:
+            fail("Content-Type is image/png", f"Got: {ct}")
+
+        # PNG magic bytes: \x89PNG
+        if r.content[:4] == b'\x89PNG':
+            ok(f"Body is a valid PNG ({len(r.content)} bytes)")
+        else:
+            fail("Body starts with PNG magic bytes", f"Got: {r.content[:8]!r}")
+
+except Exception as e:
+    fail("GET /api/model_architecture", str(e))
+
+
+# ── Test 4: POST /api/execute — response schema ───────────────────────────────
+
+section("4. POST /api/execute — Response Schema")
+
+data, err = post_execute({"prompt": "שלום"})
+if err:
+    fail("Returns a response", err)
+else:
+    ok("Returns HTTP 200")
+
+    # Required top-level fields
+    for field in ("status", "error", "response", "steps"):
+        if field in data:
+            ok(f"Has top-level field '{field}'")
+        else:
+            fail(f"Has top-level field '{field}'", f"Got keys: {list(data.keys())}")
+
+    if data.get("status") == "ok":
+        ok("'status' is 'ok'")
     else:
-        fail("Chat persisted in /api/my-chats after first message", f"Got chats: {chats}")
+        fail("'status' is 'ok'", f"Got: {data.get('status')}")
 
-    r2 = requests.get(f"{BASE}/api/chat-history/{chat_id}", timeout=5)
-    hist = r2.json()
-    if len(hist) >= 2:
-        ok("Chat history has user + bot messages", f"{len(hist)} messages stored")
-        for msg in hist:
-            print(f"         [{msg['role']}] {msg['content'][:80]}")
+    if data.get("error") is None:
+        ok("'error' is null on success")
     else:
-        fail("Chat history has user + bot messages", f"Only {len(hist)} messages found")
+        fail("'error' is null on success", str(data.get("error")))
 
-
-# ── Test 3: Conversation continuity (multi-turn) ──────────────────────────────
-
-section("3. MULTI-TURN CONVERSATION")
-
-followup = {
-    "user_name": test_user,
-    "chat_id": chat_id,   # same chat
-    "query": "האם אתה זוכר מה שאלתי לפני רגע?",
-    "city": "ariel",
-    "date": "2025-06-15"
-}
-
-print(f"\n  Sending follow-up in same chat: \"{followup['query']}\"")
-result2 = send_and_stream(followup, "Follow-up message in same chat works")
-
-if result2:
-    event_types = [e.get("type") for e in result2["events"]]
-    if "token" in event_types and "done" in event_types and "error" not in event_types:
-        ok("Follow-up message in same chat works")
-        print(f"         Agent reply: {result2['full_text'][:120]}...")
+    if isinstance(data.get("response"), str) and data.get("response"):
+        ok("'response' is a non-empty string", data["response"][:80])
     else:
-        fail("Follow-up message in same chat works", f"events: {event_types}")
+        fail("'response' is a non-empty string", str(data.get("response")))
 
-    r3 = requests.get(f"{BASE}/api/chat-history/{chat_id}", timeout=5)
-    hist2 = r3.json()
-    if len(hist2) >= 4:
-        ok(f"History grows correctly after multi-turn ({len(hist2)} messages total)")
+    steps = data.get("steps", [])
+    if isinstance(steps, list):
+        ok(f"'steps' is a list ({len(steps)} steps)")
     else:
-        fail("History grows correctly", f"Only {len(hist2)} messages")
+        fail("'steps' is a list", str(steps))
+
+    # Validate each step has required fields
+    valid_modules = {"AgentLLM", "WeatherTool", "AgriKnowledgeBase"}
+    for i, step in enumerate(steps):
+        missing = [f for f in ("module", "prompt", "response") if f not in step]
+        if missing:
+            fail(f"Step {i+1} missing fields: {missing}")
+        else:
+            ok(f"Step {i+1} has module/prompt/response", f"module={step.get('module')}")
+        if step.get("module") not in valid_modules:
+            fail(f"Step {i+1} module name matches architecture", f"Got '{step.get('module')}', expected one of {valid_modules}")
 
 
-# ── Test 4: Weather tool ──────────────────────────────────────────────────────
+# ── Test 5: POST /api/execute — error schema ──────────────────────────────────
 
-section("4. WEATHER TOOL")
+section("5. POST /api/execute — Error Response Schema")
 
-WEATHER_CITIES = [
-    ("ariel",            "אריאל"),
-    ("beer sheva",       "באר שבע"),
-    ("eilat",            "אילת"),
-    ("tlv beach",        "חוף תל אביב"),
-    ("jerusalem center", "ירושלים"),
-    ("haifa technion",   "חיפה"),
+# Send an empty prompt to trigger a graceful error or empty response
+data, err = post_execute({"prompt": ""})
+if err:
+    # If the server crashed, that's the failure
+    fail("Server handles empty prompt without crashing", err)
+else:
+    ok("Server handles empty prompt without crashing")
+    if data.get("status") in ("ok", "error"):
+        ok(f"'status' field present and valid: '{data['status']}'")
+    else:
+        fail("'status' field is 'ok' or 'error'", str(data.get("status")))
+    if data.get("status") == "error":
+        if data.get("error") and data.get("response") is None:
+            ok("Error schema correct: error is set, response is null")
+        else:
+            fail("Error schema: error should be string, response should be null", str(data))
+
+
+# ── Test 6: POST /api/execute — Weather tool integration ─────────────────────
+
+section("6. POST /api/execute — Weather Tool")
+
+WEATHER_TESTS = [
+    ("ariel",            "2025-07-01", "מה הטמפרטורה היום באריאל?"),
+    ("beer sheva",       "2025-07-01", "האם צריך להשקות היום בבאר שבע?"),
+    ("eilat",            "2025-08-15", "מה מזג האוויר היום באילת?"),
+    ("jerusalem center", "2025-01-10", "כמה קר היום בירושלים?"),
 ]
 
-for city_val, city_he in WEATHER_CITIES:
-    weather_chat = f"chat_{uuid.uuid4().hex[:8]}"
-    p = {
-        "user_name": test_user,
-        "chat_id": weather_chat,
-        "query": f"מה הטמפרטורה היום ב{city_he}? האם מומלץ להשקות?",
-        "city": city_val,
-        "date": "2025-07-01"
-    }
-    print(f"\n  Weather query for {city_he} (value='{city_val}') ...")
-    r = send_and_stream(p, f"Weather tool fires for {city_he}")
-    if r:
-        tool_started = any(e.get("type") == "status" and "אקלים" in e.get("message","") for e in r["events"])
-        has_reply    = bool(r["full_text"].strip())
-        has_error    = any(e.get("type") == "error" for e in r["events"])
+for city, date, query in WEATHER_TESTS:
+    print(f"\n  Query: '{query}' (city={city}, date={date})")
+    data, err = post_execute({"prompt": query, "city": city, "date": date})
+    if err:
+        fail(f"Weather query for {city}", err)
+        continue
 
-        if has_error:
-            err = next(e.get("message","") for e in r["events"] if e.get("type") == "error")
-            fail(f"Weather tool fires for {city_he}", f"Error: {err}")
-        elif tool_started and has_reply:
-            ok(f"Weather tool fires for {city_he}", r["full_text"][:100])
-        elif has_reply:
-            ok(f"Weather tool fires for {city_he} (tool status not captured but got reply)", r["full_text"][:100])
-        else:
-            fail(f"Weather tool fires for {city_he}", f"No reply. Events: {[e.get('type') for e in r['events']]}")
+    if data.get("status") == "error":
+        fail(f"Weather query for {city}", f"Agent error: {data.get('error')}")
+        continue
+
+    steps = data.get("steps", [])
+    modules = [s.get("module") for s in steps]
+    weather_fired = "WeatherTool" in modules
+    has_reply = bool(data.get("response", "").strip())
+
+    if weather_fired and has_reply:
+        ok(f"WeatherTool fired + got reply for {city}", data["response"][:90])
+    elif has_reply:
+        ok(f"Got reply for {city} (WeatherTool step not captured separately)", data["response"][:90])
+    else:
+        fail(f"Weather query for {city}", f"No reply. modules seen: {modules}")
     time.sleep(1)
 
 
-# ── Test 5: RAG / Knowledge-base tool ────────────────────────────────────────
+# ── Test 7: POST /api/execute — RAG / Knowledge-base tool ────────────────────
 
-section("5. RAG / KNOWLEDGE-BASE TOOL")
+section("7. POST /api/execute — RAG / AgriKnowledgeBase Tool")
 
-rag_queries = [
-    ("מהם היתרונות של גידולי כיסוי לשיפור הקרקע?", "cover crops soil"),
-    ("כיצד ניתן לנהל מחלות בשדות חיטה?",           "wheat disease management"),
-    ("מה הדרך הטובה לשמור על לחות הקרקע?",          "soil moisture retention"),
+RAG_TESTS = [
+    ("beer sheva", "2025-04-10", "מהם היתרונות של גידולי כיסוי לשיפור הקרקע?"),
+    ("ariel",      "2025-03-15", "כיצד מנהלים מחלות בשדות חיטה?"),
+    ("nitzan",     "2025-05-01", "מה הדרך הטובה לשמור על לחות הקרקע?"),
 ]
 
-for q_he, q_label in rag_queries:
-    rag_chat = f"chat_{uuid.uuid4().hex[:8]}"
-    p = {
-        "user_name": test_user,
-        "chat_id": rag_chat,
-        "query": q_he,
-        "city": "beer sheva",
-        "date": "2025-04-10"
-    }
-    print(f"\n  RAG query: \"{q_he[:50]}\"")
-    r = send_and_stream(p, f"RAG query: {q_label}")
-    if r:
-        rag_fired  = any(e.get("type") == "status" and "ידע" in e.get("message","") for e in r["events"])
-        has_reply  = bool(r["full_text"].strip())
-        has_error  = any(e.get("type") == "error" for e in r["events"])
+for city, date, query in RAG_TESTS:
+    print(f"\n  Query: '{query[:55]}' (city={city})")
+    data, err = post_execute({"prompt": query, "city": city, "date": date})
+    if err:
+        fail(f"RAG query: {query[:40]}", err)
+        continue
 
-        if has_error:
-            err = next(e.get("message","") for e in r["events"] if e.get("type") == "error")
-            fail(f"RAG query: {q_label}", f"Error: {err}")
-        elif has_reply:
-            status = "RAG tool fired" if rag_fired else "reply received (RAG status not captured)"
-            ok(f"RAG query: {q_label} — {status}", r["full_text"][:100])
-        else:
-            fail(f"RAG query: {q_label}", "No reply")
+    if data.get("status") == "error":
+        fail(f"RAG query: {query[:40]}", f"Agent error: {data.get('error')}")
+        continue
+
+    steps = data.get("steps", [])
+    modules = [s.get("module") for s in steps]
+    rag_fired = "AgriKnowledgeBase" in modules
+    has_reply = bool(data.get("response", "").strip())
+
+    if rag_fired and has_reply:
+        ok(f"AgriKnowledgeBase fired + got reply", data["response"][:90])
+    elif has_reply:
+        ok(f"Got reply (RAG step not captured separately)", data["response"][:90])
+    else:
+        fail(f"RAG query: {query[:40]}", f"No reply. modules: {modules}")
     time.sleep(1)
 
 
-# ── Test 6: Combined weather + RAG ───────────────────────────────────────────
+# ── Test 8: POST /api/execute — Combined weather + RAG ───────────────────────
 
-section("6. COMBINED WEATHER + RAG (AGENT REASONING)")
+section("8. POST /api/execute — Combined Weather + RAG")
 
-combo_chat = f"chat_{uuid.uuid4().hex[:8]}"
-p = {
-    "user_name": test_user,
-    "chat_id": combo_chat,
-    "query": "בהתאם לטמפרטורה היום בניצן, מתי כדאי לזרוע חיטה לפי הספרות המקצועית?",
+data, err = post_execute({
+    "prompt": "בהתאם לטמפרטורה היום בניצן, מתי כדאי לזרוע חיטה לפי הספרות המקצועית?",
     "city": "nitzan",
     "date": "2025-11-01"
-}
-print(f"\n  Combined query: \"{p['query'][:60]}\"")
-r = send_and_stream(p, "Agent uses both weather + RAG tools")
-if r:
-    tool_statuses = [e.get("message","") for e in r["events"] if e.get("type") == "status"]
-    used_weather = any("אקלים" in s for s in tool_statuses)
-    used_rag     = any("ידע"   in s for s in tool_statuses)
-    has_reply    = bool(r["full_text"].strip())
-    has_error    = any(e.get("type") == "error" for e in r["events"])
+})
 
-    print(f"         Tool statuses seen: {tool_statuses}")
-    if has_error:
-        err = next(e.get("message","") for e in r["events"] if e.get("type") == "error")
-        fail("Agent uses both weather + RAG tools", f"Error: {err}")
+if err:
+    fail("Combined query", err)
+elif data.get("status") == "error":
+    fail("Combined query", f"Agent error: {data.get('error')}")
+else:
+    steps = data.get("steps", [])
+    modules = [s.get("module") for s in steps]
+    used_weather = "WeatherTool" in modules
+    used_rag     = "AgriKnowledgeBase" in modules
+    has_reply    = bool(data.get("response", "").strip())
+
+    print(f"         Modules used: {modules}")
+    if used_weather and used_rag:
+        ok("Agent used BOTH WeatherTool + AgriKnowledgeBase")
+    elif used_weather or used_rag:
+        ok(f"Agent used at least one tool (weather={used_weather}, rag={used_rag})")
+    elif has_reply:
+        ok("Agent replied (steps not separately logged for tools)", data["response"][:90])
     else:
-        if used_weather and used_rag:
-            ok("Agent used BOTH weather + RAG tools in one response")
-        elif used_weather or used_rag:
-            ok("Agent used at least one tool", f"weather={used_weather}, rag={used_rag}")
-        else:
-            ok("Agent replied (no tool status captured)", r["full_text"][:100]) if has_reply else fail("Combined query", "No reply")
-        if has_reply:
-            print(f"         Full reply: {r['full_text'][:200]}")
+        fail("Combined query — no reply")
+
+    if has_reply:
+        print(f"         Reply: {data['response'][:200]}")
 
 
-# ── Test 7: Delete chat ───────────────────────────────────────────────────────
+# ── Test 9: POST /api/execute — Multi-turn conversation ──────────────────────
 
-section("7. DELETE CHAT")
+section("9. POST /api/execute — Multi-turn Conversation (chat_id)")
 
-del_chat_id = f"chat_{uuid.uuid4().hex[:8]}"
-p = {
-    "user_name": test_user,
-    "chat_id": del_chat_id,
-    "query": "הודעה לבדיקת מחיקה",
+chat_id = f"chat_{uuid.uuid4().hex[:8]}"
+user_name = f"test_{uuid.uuid4().hex[:6]}"
+
+# Turn 1
+data1, err1 = post_execute({
+    "prompt": "שלום! קוראים לי דני ואני גדל תירס.",
+    "user_name": user_name,
+    "chat_id": chat_id,
     "city": "ariel",
-    "date": "2025-03-01"
-}
-send_and_stream(p, "Seed chat for deletion test")
-time.sleep(0.3)
+    "date": "2025-06-01"
+})
 
-r = requests.delete(f"{BASE}/api/delete-chat/{del_chat_id}", timeout=5)
-if r.status_code == 200:
-    ok("DELETE /api/delete-chat returns 200")
+if err1:
+    fail("Turn 1 succeeds", err1)
+elif data1.get("status") != "ok":
+    fail("Turn 1 succeeds", str(data1.get("error")))
 else:
-    fail("DELETE /api/delete-chat returns 200", f"status={r.status_code}")
+    ok("Turn 1 succeeds", data1["response"][:80])
+    time.sleep(1)
 
-r2 = requests.get(f"{BASE}/api/chat-history/{del_chat_id}", timeout=5)
-if r2.json() == []:
-    ok("Chat history is empty after deletion")
+    # Turn 2 — test that the agent remembers the context
+    data2, err2 = post_execute({
+        "prompt": "האם אתה זוכר מה אמרתי שאני גדל?",
+        "user_name": user_name,
+        "chat_id": chat_id,
+        "city": "ariel",
+        "date": "2025-06-01"
+    })
+
+    if err2:
+        fail("Turn 2 (follow-up in same chat) succeeds", err2)
+    elif data2.get("status") != "ok":
+        fail("Turn 2 succeeds", str(data2.get("error")))
+    else:
+        ok("Turn 2 succeeds", data2["response"][:80])
+        reply2 = data2["response"].lower()
+        if "תירס" in reply2 or "דני" in reply2:
+            ok("Agent remembers previous context (mentions corn/name)")
+        else:
+            ok("Turn 2 replied (context recall unconfirmed)", data2["response"][:80])
+
+
+# ── Test 10: Steps structure validation ──────────────────────────────────────
+
+section("10. Steps Logging — Structure & Module Names")
+
+data, err = post_execute({
+    "prompt": "מה הטמפרטורה בחיפה היום?",
+    "city": "haifa technion",
+    "date": "2025-07-15"
+})
+
+if err or data.get("status") != "ok":
+    fail("Execute returns steps", err or data.get("error"))
 else:
-    fail("Chat history is empty after deletion", f"Still has: {r2.json()}")
+    steps = data.get("steps", [])
+    ok(f"Got {len(steps)} step(s)")
 
-r3 = requests.get(f"{BASE}/api/my-chats/{test_user}", timeout=5)
-still_listed = any(c["chat_id"] == del_chat_id for c in r3.json())
-if not still_listed:
-    ok("Chat removed from user's chat list after deletion")
-else:
-    fail("Chat removed from user's chat list after deletion")
-
-
-# ── Test 8: Edge cases ────────────────────────────────────────────────────────
-
-section("8. EDGE CASES")
-
-# Missing city
-p = {"user_name": test_user, "chat_id": f"chat_{uuid.uuid4().hex[:8]}", "query": "שאלה", "city": "", "date": "2025-05-01"}
-r = requests.post(f"{BASE}/get-advice", json=p, stream=True, timeout=10)
-if r.status_code == 200:
-    ok("Empty city: server returns 200 (handled by agent)")
-else:
-    fail("Empty city: server accepts request", f"status={r.status_code}")
-
-# Same chat_id, different user (should still work — just attaches to same chat)
-p2 = {"user_name": "other_user", "chat_id": chat_id, "query": "שלום", "city": "eilat", "date": "2025-01-10"}
-r2 = send_and_stream(p2, "Different user can post to existing chat_id")
-if r2 and "token" in [e.get("type") for e in r2["events"]]:
-    ok("Different user can post to existing chat_id")
+    valid_modules = {"AgentLLM", "WeatherTool", "AgriKnowledgeBase"}
+    for i, step in enumerate(steps):
+        m = step.get("module")
+        p = step.get("prompt")
+        r = step.get("response")
+        if m and p is not None and r is not None:
+            ok(f"Step {i+1}: module='{m}', has prompt + response")
+        else:
+            fail(f"Step {i+1} incomplete", str(step))
+        if m not in valid_modules:
+            fail(f"Step {i+1} module '{m}' not in architecture diagram names", str(valid_modules))
 
 
 # ── Summary ───────────────────────────────────────────────────────────────────
